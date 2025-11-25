@@ -128,6 +128,54 @@ toy_project/
 
 본 프로젝트는 교육 및 연구 목적으로 제작되었습니다.
 
+## Render 배포 가이드
+
+이 챗봇을 Render에 배포하여 웹에서 접근 가능하게 만들 수 있습니다.
+
+### 1. Render 계정 준비
+
+- [Render](https://render.com) 계정 생성
+- GitHub 계정 연동
+
+### 2. 새 Web Service 생성
+
+1. Render 대시보드에서 **"New +"** → **"Web Service"** 클릭
+2. GitHub 저장소 연결 (이 저장소 선택)
+3. 다음 설정 입력:
+
+   **Basic Settings:**
+   - **Name**: `kuct-ai-chatbot` (원하는 이름)
+   - **Region**: `Singapore` (또는 가까운 지역)
+   - **Branch**: `main`
+   - **Runtime**: `Python 3`
+
+   **Build & Deploy:**
+   - **Build Command**: `./build.sh`
+   - **Start Command**: `streamlit run rag_chatbot.py --server.port=$PORT --server.address=0.0.0.0`
+
+4. **Environment Variables** 섹션에서 환경변수 추가:
+   - **Key**: `OPENAI_API_KEY`
+   - **Value**: [당신의 OpenAI API 키]
+
+5. **"Create Web Service"** 클릭
+
+### 3. 배포 완료
+
+- 첫 배포는 임베딩 생성으로 인해 5-10분 정도 소요됩니다
+- 배포가 완료되면 Render가 제공하는 URL로 접속 가능합니다 (예: `https://kuct-ai-chatbot.onrender.com`)
+
+### 주의사항
+
+- 배포 시 자동으로 `manual.pdf`에서 임베딩이 생성됩니다
+- 첫 배포 시 OpenAI API 사용료가 발생합니다
+- 매번 재배포할 때마다 임베딩이 재생성되므로, 코드 변경 시 주의하세요
+- Hobby 플랜 이상에서는 24/7 운영되며 sleep 모드가 없습니다
+
+### 비용 최적화 팁
+
+- 코드만 수정하고 임베딩은 재생성하지 않으려면, vectorstore를 별도 스토리지에 저장하는 것을 고려하세요
+- 또는 배포 후 vectorstore를 Git에 커밋하여 재사용할 수 있습니다
+
 ## 문의
 
 문제가 발생하거나 질문이 있으시면 이슈를 등록해주세요.
