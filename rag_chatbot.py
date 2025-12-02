@@ -4,9 +4,11 @@ from langchain_community.embeddings import OpenAIEmbeddings
 from langchain_community.chat_models import ChatOpenAI
 from langchain_core.runnables import RunnableLambda
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.documents import Document
 from dotenv import load_dotenv
 import os
 import re
+import json
 
 # 환경변수 로드
 load_dotenv("env.txt")
@@ -23,6 +25,16 @@ def load_vectorstore(vectorstore_path="vectorstore"):
     embeddings = OpenAIEmbeddings()
     return FAISS.load_local(vectorstore_path, embeddings, allow_dangerous_deserialization=True)
 
+# 지표 매핑 로드 (캐시 적용)
+@st.cache_resource
+def load_indicator_mapping(vectorstore_path="vectorstore"):
+    """지표 번호 매핑 JSON 로드 (캐시됨)"""
+    mapping_file = os.path.join(vectorstore_path, "indicator_mapping.json")
+    if not os.path.exists(mapping_file):
+        return {}
+    with open(mapping_file, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
 # 지표 번호 추출 함수
 def extract_indicator_number(question):
     """질문에서 지표 번호를 추출 (예: '지표 1번', '평가지표 5번')"""
@@ -37,31 +49,29 @@ def extract_indicator_number(question):
             return int(match.group(1))
     return None
 
-# 향상된 문서 검색 함수
-def search_documents(vectordb, question, k=5, search_type="mmr"):
+# 향상된 문서 검색 함수 (지표 매핑 우선)
+def search_documents(vectordb, question, k=5, search_type="mmr", indicator_mapping=None):
     """
     질문에 맞는 문서 검색
-    - 지표 번호가 있으면 우선 메타데이터 필터링
-    - MMR/유사도 검색 사용
+    - 지표 번호가 있으면 매핑 테이블에서 직접 조회 (벡터 검색 스킵)
+    - 지표 번호가 없으면 MMR/유사도 검색 사용
     """
     indicator_num = extract_indicator_number(question)
 
-    # 지표 번호가 있는 경우 메타데이터 기반 검색
-    if indicator_num:
-        # 메타데이터 필터로 특정 지표 검색
-        filter_dict = {"type": "평가지표"}
-        retriever = vectordb.as_retriever(
-            search_type="similarity",
-            search_kwargs={
-                "k": k,
-                "filter": filter_dict
-            }
-        )
-        docs = retriever.get_relevant_documents(f"지표 {indicator_num}번")
-        # 추가로 지표 번호가 포함된 문서만 필터링
-        filtered_docs = [doc for doc in docs if f"{indicator_num}번" in doc.page_content or f"지표{indicator_num}" in doc.page_content]
-        if filtered_docs:
-            return filtered_docs[:k]
+    # 지표 번호가 있고 매핑 테이블에 존재하는 경우 직접 조회
+    if indicator_num and indicator_mapping:
+        indicator_key = str(indicator_num)  # JSON 키는 문자열
+        if indicator_key in indicator_mapping:
+            chunks = indicator_mapping[indicator_key]['chunks']
+            # Document 객체로 변환
+            docs = [
+                Document(
+                    page_content=chunk['content'],
+                    metadata=chunk['metadata']
+                )
+                for chunk in chunks[:k]  # k개만 반환
+            ]
+            return docs, True  # True = 매핑 사용
 
     # 일반 검색 (MMR 또는 유사도)
     if search_type == "mmr":
@@ -79,16 +89,16 @@ def search_documents(vectordb, question, k=5, search_type="mmr"):
             search_kwargs={"k": k}
         )
 
-    return retriever.get_relevant_documents(question)
+    return retriever.get_relevant_documents(question), False  # False = 벡터 검색 사용
 
 # RAG 체인은 사용하지 않고 직접 검색 + LLM 호출 방식으로 변경
-def generate_answer(vectordb, question, k=5, search_type="mmr"):
+def generate_answer(vectordb, question, k=5, search_type="mmr", indicator_mapping=None):
     """
     질문에 대한 답변 생성
-    Returns: (answer, retrieved_docs)
+    Returns: (answer, retrieved_docs, used_mapping)
     """
     # 문서 검색
-    docs = search_documents(vectordb, question, k=k, search_type=search_type)
+    docs, used_mapping = search_documents(vectordb, question, k=k, search_type=search_type, indicator_mapping=indicator_mapping)
 
     # 컨텍스트 구성
     context = "\n\n---\n\n".join([
@@ -125,7 +135,7 @@ def generate_answer(vectordb, question, k=5, search_type="mmr"):
     messages = prompt.format_messages(question=question, context=context)
     response = llm.invoke(messages)
 
-    return response.content, docs
+    return response.content, docs, used_mapping
 
 # Streamlit UI
 st.set_page_config(page_title="장기요양 재가급여 평가 메뉴얼", page_icon="📘")
@@ -189,10 +199,15 @@ with st.sidebar:
     )
     show_sources = st.checkbox("검색된 문서 표시", value=True, help="답변 생성에 사용된 원본 문서를 표시합니다")
 
-# 벡터 저장소 로드 (캐시로 한 번만 로드)
+# 벡터 저장소 및 지표 매핑 로드 (캐시로 한 번만 로드)
 try:
     vectordb = load_vectorstore()
-    st.sidebar.success("✅ 문서 준비 완료!")
+    indicator_mapping = load_indicator_mapping()
+
+    if indicator_mapping:
+        st.sidebar.success(f"✅ 문서 준비 완료! ({len(indicator_mapping)}개 지표 매핑됨)")
+    else:
+        st.sidebar.warning("⚠️ 문서 준비 완료 (지표 매핑 없음)")
 except FileNotFoundError as e:
     st.error(str(e))
     st.info("💡 사용 방법:\n1. 터미널에서 `python create_embeddings.py` 실행\n2. 이 페이지 새로고침")
@@ -227,14 +242,19 @@ if question:
     # 지표 번호 감지 표시
     indicator_num = extract_indicator_number(question)
     if indicator_num:
-        st.info(f"🎯 지표 {indicator_num}번에 대한 질문으로 감지되었습니다. 관련 문서를 우선 검색합니다.")
+        indicator_key = str(indicator_num)
+        if indicator_key in indicator_mapping:
+            st.info(f"🎯 지표 {indicator_num}번에 대한 질문으로 감지되었습니다. 직접 매핑 테이블에서 검색합니다. (벡터 검색 스킵)")
+        else:
+            st.info(f"🎯 지표 {indicator_num}번에 대한 질문으로 감지되었으나 매핑 테이블에 없습니다. 벡터 검색을 사용합니다.")
 
     with st.spinner("🔍 관련 문서를 검색하고 답변을 생성하는 중..."):
-        answer, retrieved_docs = generate_answer(
+        answer, retrieved_docs, used_mapping = generate_answer(
             vectordb,
             question,
             k=k_docs,
-            search_type=search_type
+            search_type=search_type,
+            indicator_mapping=indicator_mapping
         )
 
         st.success("✅ 답변이 생성되었습니다!")
@@ -266,10 +286,12 @@ if question:
 
         # 검색 방식 정보
         with st.expander("ℹ️ 검색 설정 정보"):
+            search_method = "직접 매핑 조회 (벡터 검색 스킵)" if used_mapping else ('MMR (다양성 중심)' if search_type == 'mmr' else '유사도 (정확성 중심)')
             st.info(f"""
             **현재 검색 설정**
-            - 검색 방식: {'MMR (다양성 중심)' if search_type == 'mmr' else '유사도 (정확성 중심)'}
+            - 검색 방식: {search_method}
             - 검색 문서 개수: {k_docs}개
             - 지표 번호 감지: {'예 (지표 ' + str(indicator_num) + '번)' if indicator_num else '아니오'}
+            - 매핑 테이블 사용: {'예 ✅' if used_mapping else '아니오'}
             - LLM 모델: GPT-4o-mini
             """)

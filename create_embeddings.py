@@ -7,9 +7,23 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import OpenAIEmbeddings
 from dotenv import load_dotenv
 import os
+import json
+import re
 
 # 환경변수 로드
 load_dotenv("env.txt")
+
+def extract_indicator_numbers(text):
+    """텍스트에서 지표 번호를 추출"""
+    patterns = [
+        r'지표\s*(\d+)',
+        r'평가지표\s*(\d+)',
+    ]
+    numbers = set()
+    for pattern in patterns:
+        matches = re.findall(pattern, text)
+        numbers.update([int(m) for m in matches])
+    return list(numbers)
 
 def create_and_save_embeddings(pdf_path, save_dir="vectorstore"):
     """
@@ -85,6 +99,40 @@ def create_and_save_embeddings(pdf_path, save_dir="vectorstore"):
     print(f"💾 벡터 저장소 저장 중: {save_dir}")
     os.makedirs(save_dir, exist_ok=True)
     vectorstore.save_local(save_dir)
+
+    # 지표 번호별 매핑 생성
+    print("🔢 지표 번호 매핑 생성 중...")
+    indicator_mapping = {}
+
+    for idx, doc in enumerate(split_docs):
+        # 문서 내용에서 지표 번호 추출
+        indicator_nums = extract_indicator_numbers(doc.page_content)
+
+        for num in indicator_nums:
+            if num not in indicator_mapping:
+                indicator_mapping[num] = {
+                    'chunk_indices': [],
+                    'chunks': []
+                }
+            indicator_mapping[num]['chunk_indices'].append(idx)
+            # 청크 정보 저장 (내용, 메타데이터)
+            indicator_mapping[num]['chunks'].append({
+                'content': doc.page_content,
+                'metadata': {
+                    'page': doc.metadata.get('page', 'N/A'),
+                    'section': doc.metadata.get('section', 'N/A'),
+                    'type': doc.metadata.get('type', 'N/A')
+                }
+            })
+
+    # JSON으로 저장
+    mapping_file = os.path.join(save_dir, "indicator_mapping.json")
+    with open(mapping_file, 'w', encoding='utf-8') as f:
+        json.dump(indicator_mapping, f, ensure_ascii=False, indent=2)
+
+    print(f"📊 지표 매핑 저장 완료: {mapping_file}")
+    print(f"   총 {len(indicator_mapping)}개의 지표 번호가 매핑되었습니다.")
+    print(f"   매핑된 지표 번호: {sorted(indicator_mapping.keys())}")
 
     print("✅ 완료! 메타데이터가 포함된 최적화된 임베딩이 저장되었습니다.")
     print(f"   총 {len(split_docs)}개의 청크가 임베딩되었습니다.")
