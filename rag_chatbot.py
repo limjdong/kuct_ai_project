@@ -89,7 +89,7 @@ def search_documents(vectordb, question, k=5, search_type="mmr", indicator_mappi
             search_kwargs={"k": k}
         )
 
-    return retriever.get_relevant_documents(question), False  # False = 벡터 검색 사용
+    return retriever.invoke(question), False  # False = 벡터 검색 사용
 
 # RAG 체인은 사용하지 않고 직접 검색 + LLM 호출 방식으로 변경
 def generate_answer(vectordb, question, k=5, search_type="mmr", indicator_mapping=None):
